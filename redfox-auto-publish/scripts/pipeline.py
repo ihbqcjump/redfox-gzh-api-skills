@@ -354,14 +354,16 @@ def _extract_themes(title, content=""):
 def generate_cover_image(title, content=""):
     """
     使用 Pollinations.ai 免费生成封面图（无需 API Key）。
-    返回 JPEG 字节。
+    带重试逻辑：最多 3 次尝试，每次换 seed + 缩短 prompt，应对 403/超时。
+    返回 JPEG/PNG 字节。
     """
     print("  生成 AI 封面图...", flush=True)
     themes = _extract_themes(title, content)
 
+    # 构建完整 prompt
     if themes:
         visual = "; ".join(_THEME_VISUAL_MAP[k] for k in themes[:5])
-        prompt = (
+        full_prompt = (
             f"A powerful cover image representing: {visual}. "
             f"Article theme: {title}. "
             f"Mood: dramatic and thought-provoking"
@@ -371,31 +373,53 @@ def generate_cover_image(title, content=""):
         clean = re.sub(r"<[^>]+>", "", content)
         clean = re.sub(r"[#*`\[\]()>_~\-]", "", clean)
         clean = re.sub(r"\s+", " ", clean).strip()[:120]
-        prompt = (
+        full_prompt = (
             f"Professional WeChat article cover for: {title}. "
             f"Content: {clean}. "
             f"Visually striking, professional composition, vibrant colors"
             + _STYLE_SUFFIX
         )
 
-    encoded = urllib.parse.quote(prompt, safe="")
-    seed = hash(title) % 999999
-    url = (
-        f"{POLLINATIONS_URL.format(prompt=encoded)}"
-        f"?width=1024&height=576&model=flux&nologo=true&seed={seed}"
-    )
+    # 重试策略：3 次尝试，每次换 seed + 逐步缩短 prompt
+    max_retries = 3
+    base_seed = hash(title) % 999999
 
-    try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            img_data = resp.read()
-        if len(img_data) < 1000:
-            raise ValueError(f"封面图太小 ({len(img_data)} bytes)，可能生成失败")
-        print(f"  封面图已生成 ({len(img_data)//1024}KB)", flush=True)
-        return img_data
-    except Exception as e:
-        print(f"  Pollinations.ai 失败: {e}，使用备用渐变图", flush=True)
-        return _generate_fallback_png()
+    for attempt in range(1, max_retries + 1):
+        seed = (base_seed + attempt * 11111) % 999999
+
+        # 第 1 次用完整 prompt，第 2/3 次逐步精简
+        if attempt == 1:
+            prompt = full_prompt
+        elif attempt == 2:
+            # 去掉 _STYLE_SUFFIX，缩短 prompt
+            prompt = full_prompt[:200]
+        else:
+            # 最后一次：极简 prompt
+            prompt = title if title else "professional article cover"
+
+        encoded = urllib.parse.quote(prompt, safe="")
+        url = (
+            f"{POLLINATIONS_URL.format(prompt=encoded)}"
+            f"?width=1024&height=576&model=flux&nologo=true&seed={seed}"
+        )
+
+        try:
+            print(f"  尝试 {attempt}/{max_retries} (seed={seed})...", flush=True)
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "Mozilla/5.0 (compatible; RedFoxBot/1.0)")
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                img_data = resp.read()
+            if len(img_data) < 1000:
+                raise ValueError(f"图片太小 ({len(img_data)}B)")
+            print(f"  封面图已生成 ({len(img_data)//1024}KB, attempt={attempt})", flush=True)
+            return img_data
+        except Exception as e:
+            print(f"  attempt {attempt} 失败: {e}", flush=True)
+            if attempt < max_retries:
+                time.sleep(2 * attempt)   # 递增等待 2s, 4s
+
+    print("  Pollinations.ai 全部失败，使用备用渐变图", flush=True)
+    return _generate_fallback_png()
 
 
 def _generate_fallback_png(width=900, height=383):
