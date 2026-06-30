@@ -4,9 +4,10 @@
 RedFox 热点一条龙 → 公众号草稿自动发布
 
 全自动链路:
-  Phase 1  热点发现  — RedFox API 多类别扫描，按互动量打分排序
-  Phase 2  内容生成  — LLM 基于热点数据生成原创文章
-  Phase 3  草稿发布  — 微信公众号 API 上传封面 + 创建草稿
+  Phase 1    热点发现  — RedFox API 多类别扫描，按互动量打分排序
+  Phase 1.5  爆款拆解  — queryWork 拉取完整正文 → LLM 拆解爆款要素
+  Phase 2    内容生成  — LLM 基于爆款公式定向创作原创文章
+  Phase 3    草稿发布  — 微信公众号 API 上传封面 + 创建草稿
 
 用法:
   python pipeline.py                     # 全自动：抓热点 → 生成 → 发布
@@ -189,21 +190,269 @@ def _is_recent(time_str, days=7):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Phase 1.5 — 爆款拆解
+# ═══════════════════════════════════════════════════════════════════
+
+def fetch_full_articles(top_articles, max_fetch=3):
+    """
+    用 queryWork API 拉取 Top 文章的完整正文（含关键词云）。
+    返回 list of dict（在原始 article 基础上追加 content/summary/contentKeywords 等）。
+    """
+    print(f"\n[Phase 1.5a] 拉取 Top {max_fetch} 文章完整正文", flush=True)
+    full_articles = []
+
+    for i, art in enumerate(top_articles[:max_fetch]):
+        uuid = art.get("workUuid", "")
+        if not uuid:
+            print(f"  [{i+1}] 无 workUuid，跳过", flush=True)
+            full_articles.append(art)
+            continue
+
+        print(f"  [{i+1}] {art.get('title', 'N/A')[:40]}...", flush=True)
+        result = http_post(API["query_work"], {"workUuid": uuid})
+        if result.get("code") == 2000 and result.get("data"):
+            detail = result["data"]
+            # 合并原始数据 + 详情（详情优先）
+            merged = {**art, **detail}
+            content = detail.get("content", "")
+            print(f"       正文 {len(content)} 字"
+                  f" 阅读={detail.get('readCount', 0)}"
+                  f" 点赞={detail.get('likeCount', 0)}"
+                  f" 分享={detail.get('shareCount', 0)}", flush=True)
+            full_articles.append(merged)
+        else:
+            print(f"       queryWork 失败，使用原始数据", flush=True)
+            full_articles.append(art)
+
+        # 避免请求过快
+        if i < max_fetch - 1:
+            time.sleep(0.5)
+
+    return full_articles
+
+
+VIRAL_ANALYSIS_PROMPT = """\
+你是一位资深的微信公众号爆款分析师，专门研究 10W+ 爆文的传播规律。
+
+你的任务：深度拆解提供的热门文章，分析它们为什么能爆，并提炼出可复用的爆款公式。
+
+请从以下维度逐一分析：
+
+1. 【情绪钩子】文章用了什么情绪来抓住读者？（焦虑/愤怒/惊喜/共鸣/好奇/恐惧/自豪）
+   - 具体在标题和开头如何触发？
+   - 用了哪些词句来制造情绪？
+
+2. 【标题策略】标题用了什么技巧？
+   - 数字法则？悬念缺口？对比冲突？身份认同？紧迫感？
+   - 为什么让人忍不住点？
+
+3. 【开头钩子】前3段用了什么手法留住读者？
+   - 故事开头？数据震撼？反常识？提问引导？场景代入？
+
+4. 【叙事结构】文章的整体结构是什么？
+   - 总分总？递进式？故事线？对比式？
+   - 段落节奏如何？（长短交替？每段几个句子？）
+
+5. 【数据与案例】用了哪些数据/案例增强说服力？
+   - 数据的具体程度？来源可信度？
+   - 案例是否贴近读者生活？
+
+6. 【互动设计】文章如何引导读者互动（点赞/在看/转发/评论）？
+   - 结尾用了什么互动话术？
+   - 是否有争议性观点引发讨论？
+
+7. 【传播基因】这篇文章为什么会被转发？
+   - 社交货币（让转发者显得有见识/有态度/关心时事）？
+   - 实用价值（收藏备用）？
+   - 情感共鸣（替读者说出了想说的话）？
+
+最后，请总结一个【爆款公式】：
+- 3-5 条最直接可用的创作法则
+- 每条法则配一个从原文中抽取的具体示例
+
+输出严格 JSON（不要 markdown 代码块包裹）：
+{
+  "emotional_hooks": "情绪钩子分析",
+  "title_strategy": "标题策略分析",
+  "opening_hook": "开头钩子分析",
+  "narrative_structure": "叙事结构分析",
+  "data_and_cases": "数据与案例分析",
+  "engagement_design": "互动设计分析",
+  "viral_genes": "传播基因分析",
+  "viral_formula": [
+    "法则1: 描述 — 原文示例",
+    "法则2: 描述 — 原文示例",
+    "法则3: 描述 — 原文示例"
+  ]
+}"""
+
+
+def analyze_viral_elements(topic, full_articles):
+    """
+    让 LLM 拆解爆款要素：情绪钩子、标题策略、叙事结构、传播基因等。
+    返回分析结果 dict。
+    """
+    print(f"\n[Phase 1.5b] 爆款拆解 — LLM 分析病毒传播要素", flush=True)
+
+    api_url = os.environ.get("LLM_API_URL", "https://api.openai.com/v1")
+    api_key = os.environ.get("LLM_API_KEY", "")
+    model   = os.environ.get("LLM_VIRAL_MODEL") or os.environ.get("LLM_MODEL", "gpt-4o")
+
+    if not api_key:
+        print("  LLM_API_KEY 未设置，跳过爆款拆解", flush=True)
+        return None
+
+    # 构建分析素材
+    analysis_input = f"热点话题方向: {topic}\n\n"
+    for i, art in enumerate(full_articles, 1):
+        analysis_input += f"{'='*50}\n"
+        analysis_input += f"【爆款文章 {i}】\n"
+        analysis_input += f"标题: {art.get('title', 'N/A')}\n"
+        analysis_input += f"数据: 阅读{art.get('readCount', 0)} " \
+                          f"点赞{art.get('likeCount', 0)} " \
+                          f"分享{art.get('shareCount', 0)} " \
+                          f"在看{art.get('watchCount', 0)} " \
+                          f"收藏{art.get('collectCount', 0)} " \
+                          f"评论{art.get('commentCount', 0)}\n"
+        # 摘要
+        summary = art.get("summary") or art.get("description") or ""
+        if summary:
+            analysis_input += f"摘要: {summary[:200]}\n"
+        # 完整正文（截取前 2000 字，避免超出 token 限制）
+        content = art.get("content", "")
+        if content:
+            # 去掉 HTML 标签便于 LLM 分析纯文本
+            plain = re.sub(r"<[^>]+>", "", content)
+            plain = re.sub(r"\s+", " ", plain).strip()
+            analysis_input += f"正文（前2000字）:\n{plain[:2000]}\n"
+        # 关键词云
+        kw_data = art.get("contentKeywords")
+        if kw_data:
+            if isinstance(kw_data, dict) and kw_data.get("keyword"):
+                analysis_input += f"关键词: {kw_data['keyword']}\n"
+            elif isinstance(kw_data, list):
+                kws = [k.get("keyword", "") for k in kw_data[:8] if k.get("keyword")]
+                if kws:
+                    analysis_input += f"关键词: {', '.join(kws)}\n"
+        analysis_input += "\n"
+
+    url = f"{api_url.rstrip('/')}/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": VIRAL_ANALYSIS_PROMPT},
+            {"role": "user", "content": analysis_input},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 4096,
+    }, ensure_ascii=False).encode("utf-8")
+
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json; charset=utf-8")
+    req.add_header("Authorization", f"Bearer {api_key}")
+
+    print(f"  调用 LLM ({model}) 拆解爆款...", flush=True)
+    raw = None
+    for attempt in range(1, 4):  # 最多 3 次
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            raw = data["choices"][0]["message"]["content"]
+            # DeepSeek-R1 等推理模型可能 content 为空，reasoning_content 有内容
+            if not raw:
+                msg = data["choices"][0]["message"]
+                raw = msg.get("reasoning_content", "")
+            break
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            if attempt < 3:
+                print(f"  尝试 {attempt} 失败 (HTTP {e.code})，{3*attempt}s 后重试...", flush=True)
+                time.sleep(3 * attempt)
+                # 重建 request（urllib request 不能复用）
+                req = urllib.request.Request(url, data=payload, method="POST")
+                req.add_header("Content-Type", "application/json; charset=utf-8")
+                req.add_header("Authorization", f"Bearer {api_key}")
+            else:
+                print(f"  爆款拆解失败 HTTP {e.code}: {body[:200]}，继续后续步骤", flush=True)
+                return None
+        except Exception as e:
+            if attempt < 3:
+                print(f"  尝试 {attempt} 失败 ({e})，{3*attempt}s 后重试...", flush=True)
+                time.sleep(3 * attempt)
+                req = urllib.request.Request(url, data=payload, method="POST")
+                req.add_header("Content-Type", "application/json; charset=utf-8")
+                req.add_header("Authorization", f"Bearer {api_key}")
+            else:
+                print(f"  爆款拆解失败: {e}，继续后续步骤", flush=True)
+                return None
+
+    # 解析 JSON（不用 _parse_llm_json，因为它要求 title/content/digest 字段）
+    try:
+        cleaned = raw.strip()
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned)
+        if m:
+            cleaned = m.group(1).strip()
+        analysis = json.loads(cleaned)
+    except Exception:
+        try:
+            # 尝试提取第一个 { ... } 块
+            m2 = re.search(r"\{[\s\S]*\}", raw)
+            if m2:
+                analysis = json.loads(m2.group())
+            else:
+                analysis = {"raw_analysis": raw[:2000]}
+        except Exception:
+            analysis = {"raw_analysis": raw[:2000]}
+
+    # 打印摘要
+    print(f"  拆解完成:", flush=True)
+    for key, label in [
+        ("emotional_hooks", "情绪钩子"),
+        ("title_strategy", "标题策略"),
+        ("opening_hook", "开头钩子"),
+        ("narrative_structure", "叙事结构"),
+        ("viral_genes", "传播基因"),
+    ]:
+        val = analysis.get(key, "")
+        if val:
+            # LLM 可能返回 list 或 str，统一处理
+            if isinstance(val, list):
+                val = "；".join(str(v) for v in val)
+            preview = str(val).replace("\n", " ")[:80]
+            print(f"    {label}: {preview}...", flush=True)
+
+    formula = analysis.get("viral_formula", [])
+    if formula:
+        print(f"  爆款公式 ({len(formula)} 条):", flush=True)
+        for f in formula[:5]:
+            print(f"    → {f[:100]}", flush=True)
+
+    return analysis
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Phase 2 — 内容生成
 # ═══════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """\
 你是一位资深微信公众号内容创作者，擅长打造 10W+ 爆文。
 
-你的任务：基于提供的热点话题和参考数据，创作一篇高质量的原创公众号文章。
+你的任务：基于提供的热点话题、爆款拆解分析和参考数据，创作一篇高质量的原创公众号文章。
+
+⚡ 关键：你必须严格遵循「爆款公式」中的创作法则！这些法则是从真正的 10W+ 爆文中提炼出来的，不是泛泛的理论。每一条法则都要在你的文章中体现。
 
 要求：
 1. 标题抓眼球但不标题党，让人有点击欲望。标题不超过 14 个汉字！
+   → 运用爆款拆解中的标题策略
 2. 开头 3 句话内必须勾住读者，制造悬念或共鸣
+   → 运用爆款拆解中的开头钩子技巧
 3. 内容要有独特视角和深度分析，不是简单复述新闻
 4. 段落短小（2-4 句），适合手机阅读
+   → 运用爆款拆解中的叙事结构和节奏
 5. 适当用数据、案例、对比增强说服力
+   → 参考爆款拆解中的数据与案例用法
 6. 结尾引导读者思考和互动
+   → 运用爆款拆解中的互动设计和传播基因
 7. 摘要不超过 40 个汉字，要有悬念感
 
 ⚠️ HTML 格式要求（微信公众号渲染限制）：
@@ -215,13 +464,13 @@ SYSTEM_PROMPT = """\
 输出严格 JSON（不要 markdown 代码块包裹）：
 {
   "title": "文章标题（≤14个汉字）",
-  "content": "<p>HTML正文</p>（1500-2500字）",
+  "content": "<p>HTML正文</p>（2000-3000字，必须充实详尽，少于1500字不合格）",
   "digest": "文章摘要（≤40个汉字）"
 }"""
 
 
-def _build_prompt(topic, refs):
-    """构建 LLM 创作 prompt"""
+def _build_prompt(topic, refs, viral_analysis=None):
+    """构建 LLM 创作 prompt（含爆款拆解结果）"""
     ref_text = ""
     for i, r in enumerate(refs, 1):
         ref_text += (
@@ -238,21 +487,59 @@ def _build_prompt(topic, refs):
         if content:
             ref_text += f"正文节选: {content[:500]}\n"
 
+    # 插入爆款拆解结果
+    analysis_text = ""
+    if viral_analysis:
+        analysis_text = "\n\n═══ 爆款拆解分析（必须严格遵循） ═══\n\n"
+        for key, label in [
+            ("emotional_hooks", "情绪钩子"),
+            ("title_strategy", "标题策略"),
+            ("opening_hook", "开头钩子"),
+            ("narrative_structure", "叙事结构"),
+            ("data_and_cases", "数据与案例"),
+            ("engagement_design", "互动设计"),
+            ("viral_genes", "传播基因"),
+        ]:
+            val = viral_analysis.get(key, "")
+            if val:
+                # LLM 可能返回 list 或 str，统一处理
+                if isinstance(val, list):
+                    val = "；".join(str(v) for v in val)
+                analysis_text += f"【{label}】{val}\n\n"
+        formula = viral_analysis.get("viral_formula", [])
+        if formula:
+            analysis_text += "【爆款公式 — 创作时必须逐条应用】\n"
+            for j, f in enumerate(formula, 1):
+                analysis_text += f"  {j}. {f}\n"
+            analysis_text += "\n"
+        # 如果有原始分析（JSON 解析失败的情况）
+        raw = viral_analysis.get("raw_analysis", "")
+        if raw and not any(viral_analysis.get(k) for k in
+                           ["emotional_hooks", "title_strategy", "opening_hook"]):
+            analysis_text += f"\n【分析原文】\n{raw[:1500]}\n"
+
     return (
         f"当前热点话题: {topic}\n\n"
-        f"以下是相关热门文章数据，请分析热点角度并创作原创文章:\n"
+        f"以下是相关热门文章数据及爆款拆解分析，请严格运用爆款公式创作原创文章:\n"
         f"{ref_text}"
+        f"{analysis_text}"
+        f"\n⚠️ 重要：正文必须 2000-3000 字！至少包含 5-8 个段落，每段 200-400 字。"
+        f"要有深度分析、数据引用、案例对比，不要泛泛而谈。少于 1500 字不合格！\n"
     )
 
 
-def generate_article(topic, refs):
-    """调用 LLM 生成原创文章"""
+def generate_article(topic, refs, viral_analysis=None):
+    """调用 LLM 生成原创文章（可选传入爆款拆解结果）"""
     print(f"\n[Phase 2] 内容生成", flush=True)
     print(f"  话题: {topic}", flush=True)
+    if viral_analysis:
+        n_formula = len(viral_analysis.get("viral_formula", []))
+        print(f"  已加载爆款拆解: {n_formula} 条创作法则", flush=True)
 
     api_url = os.environ.get("LLM_API_URL", "https://api.openai.com/v1")
     api_key = os.environ.get("LLM_API_KEY", "")
-    model   = os.environ.get("LLM_MODEL", "gpt-4o")
+    model   = os.environ.get("LLM_WRITER_MODEL") or os.environ.get("LLM_MODEL", "gpt-4o")
+    print(f"  写作模型: {model}", flush=True)
 
     if not api_key:
         raise RuntimeError("LLM_API_KEY 环境变量未设置")
@@ -262,10 +549,10 @@ def generate_article(topic, refs):
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": _build_prompt(topic, refs)},
+            {"role": "user", "content": _build_prompt(topic, refs, viral_analysis)},
         ],
         "temperature": 0.85,
-        "max_tokens": 4096,
+        "max_tokens": 6144,
     }, ensure_ascii=False).encode("utf-8")
 
     req = urllib.request.Request(url, data=payload, method="POST")
@@ -273,21 +560,90 @@ def generate_article(topic, refs):
     req.add_header("Authorization", f"Bearer {api_key}")
 
     print(f"  调用 LLM ({model})...", flush=True)
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace") if e.fp else ""
-        raise RuntimeError(f"LLM 请求失败 HTTP {e.code}: {body[:300]}")
-    except Exception as e:
-        raise RuntimeError(f"LLM 请求失败: {e}")
+    content = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            msg = data["choices"][0]["message"]
+            content = msg.get("content") or msg.get("reasoning_content", "")
+            break
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            if attempt < 3:
+                print(f"  尝试 {attempt} 失败 (HTTP {e.code})，{3*attempt}s 后重试...", flush=True)
+                time.sleep(3 * attempt)
+                req = urllib.request.Request(url, data=payload, method="POST")
+                req.add_header("Content-Type", "application/json; charset=utf-8")
+                req.add_header("Authorization", f"Bearer {api_key}")
+            else:
+                raise RuntimeError(f"LLM 请求失败 HTTP {e.code}: {body[:300]}")
+        except Exception as e:
+            if attempt < 3:
+                print(f"  尝试 {attempt} 失败 ({e})，{3*attempt}s 后重试...", flush=True)
+                time.sleep(3 * attempt)
+                req = urllib.request.Request(url, data=payload, method="POST")
+                req.add_header("Content-Type", "application/json; charset=utf-8")
+                req.add_header("Authorization", f"Bearer {api_key}")
+            else:
+                raise RuntimeError(f"LLM 请求失败: {e}")
 
-    content = data["choices"][0]["message"]["content"]
     article = _parse_llm_json(content)
 
     print(f"  标题: {article['title']}", flush=True)
     print(f"  摘要: {article['digest']}", flush=True)
     print(f"  正文: {len(article['content'])} 字符", flush=True)
+
+    # 正文太短？重试（LLM 有时会偷懒）
+    MIN_CONTENT_LEN = 1200
+    max_retries = 2
+    for retry in range(1, max_retries + 1):
+        if len(article["content"]) >= MIN_CONTENT_LEN:
+            break
+        print(f"  ⚠️ 正文太短 ({len(article['content'])} 字 < {MIN_CONTENT_LEN})，"
+              f"第 {retry} 次重新生成...", flush=True)
+        # 追加长度投诉
+        extra = (
+            f"\n\n⚠️ 你上一次生成的正文只有 {len(article['content'])} 字，远远不够！"
+            f"必须写满 2000-3000 字！至少 8 个段落，每段 250-400 字。"
+            f"展开深度分析、加入更多案例和数据对比、增加读者互动环节。"
+            f"不要偷懒！"
+        )
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": _build_prompt(topic, refs, viral_analysis) + extra},
+        ]
+        payload = json.dumps({
+            "model": model,
+            "messages": messages,
+            "temperature": 0.9,
+            "max_tokens": 6144,
+        }, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json; charset=utf-8")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        for sub_attempt in range(1, 3):
+            try:
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                msg = data["choices"][0]["message"]
+                content = msg.get("content") or msg.get("reasoning_content", "")
+                article = _parse_llm_json(content)
+                print(f"  重试后正文: {len(article['content'])} 字符", flush=True)
+                break
+            except urllib.error.HTTPError as e:
+                if sub_attempt < 2:
+                    print(f"  重试请求失败 (HTTP {e.code})，重试...", flush=True)
+                    time.sleep(3)
+                    req = urllib.request.Request(url, data=payload, method="POST")
+                    req.add_header("Content-Type", "application/json; charset=utf-8")
+                    req.add_header("Authorization", f"Bearer {api_key}")
+                else:
+                    print(f"  重试失败: HTTP {e.code}", flush=True)
+            except Exception as e:
+                print(f"  重试失败: {e}", flush=True)
+                break
+
     return article
 
 
@@ -563,10 +919,23 @@ def run_pipeline(keyword=None, dry_run=False, as_json=False):
         for a in top_articles[:5]
     ]
 
+    # ── Phase 1.5: 爆款拆解 ──────────────────────────────────────
+    # 1.5a: 拉取 Top 文章完整正文
+    full_articles = fetch_full_articles(top_articles[:5], max_fetch=3)
+    result["full_articles_fetched"] = len(full_articles)
+
+    # 1.5b: LLM 拆解爆款要素
+    viral_analysis = analyze_viral_elements(topic, full_articles)
+    if viral_analysis:
+        result["viral_analysis"] = {
+            k: v for k, v in viral_analysis.items()
+            if k != "raw_analysis"
+        }
+
     # ── Phase 2 ───────────────────────────────────────────────────
     refs = top_articles[:5]
     try:
-        article = generate_article(topic, refs)
+        article = generate_article(topic, refs, viral_analysis=viral_analysis)
     except Exception as e:
         print(f"\n  内容生成失败: {e}", flush=True)
         result["status"] = "generate_failed"
