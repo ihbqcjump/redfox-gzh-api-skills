@@ -435,47 +435,110 @@ def analyze_viral_elements(topic, full_articles):
 # ═══════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """\
-你是一位资深微信公众号内容创作者，擅长打造 10W+ 爆文。
+你是一位资深微信公众号内容创作者，擅长打造 10W+ 爆文，同时精通微信搜一搜 SEO 优化。
 
 你的任务：基于提供的热点话题、爆款拆解分析和参考数据，创作一篇高质量的原创公众号文章。
 
 ⚡ 关键：你必须严格遵循「爆款公式」中的创作法则！这些法则是从真正的 10W+ 爆文中提炼出来的，不是泛泛的理论。每一条法则都要在你的文章中体现。
 
-要求：
+═══════════════════════════════════
+一、内容创作要求
+═══════════════════════════════════
+
 1. 标题抓眼球但不标题党，让人有点击欲望。标题不超过 14 个汉字！
    → 运用爆款拆解中的标题策略
+   → 标题必须包含 2-3 个搜索热词（如 房价/楼市/二手房/买房/股市/AI/人工智能 等）
+   → 标题尽量带数字或对比，提升点击率
 2. 开头 3 句话内必须勾住读者，制造悬念或共鸣
    → 运用爆款拆解中的开头钩子技巧
+   → 正文前 100 字必须自然嵌入 1-2 个用户常搜的长尾词（如"房价还会跌吗""现在能买吗"等问句形式）
 3. 内容要有独特视角和深度分析，不是简单复述新闻
 4. 段落短小（2-4 句），适合手机阅读
    → 运用爆款拆解中的叙事结构和节奏
-5. 适当用数据、案例、对比增强说服力
+5. 适当用数据、案例、对比增强说服力（至少 10 组数据）
    → 参考爆款拆解中的数据与案例用法
 6. 结尾引导读者思考和互动
    → 运用爆款拆解中的互动设计和传播基因
-7. 摘要不超过 40 个汉字，要有悬念感
+7. 摘要不超过 40 个汉字
+   → 摘要前 15 字必须包含核心搜索关键词
+   → 摘要要有悬念感，同时兼顾搜索匹配
 
-⚠️ HTML 格式要求（微信公众号渲染限制）：
-  - 禁止使用 <ul>、<ol>、<li> 标签（微信不支持，会渲染为空白）
-  - 只用 <p>、<strong>、<em>、<blockquote>、<section>、<br/>
-  - 段落用 <p> 包裹，段间留空行
-  - 如需列举，用 <p>➤ 要点内容</p> 或 <p>① 要点内容</p> 格式
+═══════════════════════════════════
+二、HTML 排版要求（极其重要！）
+═══════════════════════════════════
+
+⚠️ 禁止使用 <ul>、<ol>、<li> 标签（微信不支持，会渲染为空白）
+允许使用：<p>、<strong>、<em>、<blockquote>、<section>、<br/>、<hr/>
+
+排版必须做到以下标准，否则不合格：
+
+【加粗】至少 5-8 处 <strong> 加粗：
+  - 核心数据加粗（如 <strong>连跌11个月</strong>、<strong>暴涨42%</strong>）
+  - 金句加粗（如 <strong>杠杆者把风险扛走，现金者把筹码收下</strong>）
+  - 关键结论加粗
+
+【引用块】至少 2-3 处 <blockquote>：
+  - 用于突出核心观点或震撼性数据
+  - 格式：<blockquote style="border-left:3px solid #ddd;padding:10px;color:#666;font-style:italic;">引用内容</blockquote>
+
+【小标题】每个章节用加粗段落做小标题：
+  - 格式：<p><strong style="font-size:17px;color:#333;">一、小标题文字</strong></p>
+  - 全文至少 3-5 个小标题，给文章清晰的章节感
+
+【分隔线】大章节之间用 <hr/> 分隔：
+  - 格式：<hr style="border:none;border-top:1px solid #eee;margin:20px 0;"/>
+  - 全文 2-4 条分隔线
+
+【颜色强调】关键数据或警示用颜色：
+  - 格式：<strong style="color:#c0392b;">红色强调</strong> 用于警示/震撼数据
+  - 格式：<strong style="color:#2980b9;">蓝色强调</strong> 用于关键结论
+  - 全文 2-3 处颜色强调
+
+【段落间距】段落间用 <br/><br/> 留白，保证阅读呼吸感
+
+═══════════════════════════════════
+三、SEO 关键词布局要求
+═══════════════════════════════════
+
+微信搜一搜是公众号第二大流量来源，必须做好关键词布局：
+
+1. 标题：包含 2-3 个核心搜索热词
+2. 摘要：前 15 字包含核心关键词，整体包含 1 个长尾搜索词
+3. 正文首段（前 100 字）：自然嵌入 2-3 个搜索关键词/长尾词
+4. 正文中：核心关键词自然出现 5-8 次（不要堆砌），长尾词至少覆盖 3 个
+5. 结尾段：再次出现核心关键词，强化搜索匹配
+
+═══════════════════════════════════
+四、热点关联性要求
+═══════════════════════════════════
+
+文章必须与提供的原始热点话题直接相关！不能只是同一大类的泛泛文章。
+如果热点是关于某个具体事件/人物/政策，你的文章必须围绕这个事件展开，
+不能跑到其他话题上去。
 
 输出严格 JSON（不要 markdown 代码块包裹）：
 {
-  "title": "文章标题（≤14个汉字）",
-  "content": "<p>HTML正文</p>（2000-3000字，必须充实详尽，少于1500字不合格）",
-  "digest": "文章摘要（≤40个汉字）"
+  "title": "文章标题（≤14个汉字，含2-3个搜索热词）",
+  "content": "<p>HTML正文</p>（2000-3000字，排版必须包含加粗/引用块/小标题/分隔线）",
+  "digest": "文章摘要（≤40个汉字，前15字含核心关键词）"
 }"""
 
 
 def _build_prompt(topic, refs, viral_analysis=None):
-    """构建 LLM 创作 prompt（含爆款拆解结果）"""
+    """构建 LLM 创作 prompt（含爆款拆解结果 + SEO 关键词 + 热点标题）"""
+    # ── 从参考文章标题中提取 SEO 关键词 ──
+    # 这些标题已经被验证是热门内容，其中的核心词就是有效的搜索词
+    seo_keywords = _extract_seo_keywords(refs)
+
+    # ── 参考文章数据 ──
     ref_text = ""
+    hot_titles = []
     for i, r in enumerate(refs, 1):
+        title = r.get('title', 'N/A')
+        hot_titles.append(title)
         ref_text += (
             f"\n--- 参考文章 {i} ---\n"
-            f"标题: {r.get('title', 'N/A')}\n"
+            f"标题: {title}\n"
             f"数据: 阅读{r.get('readCount', 0)} "
             f"点赞{r.get('likeCount', 0)} "
             f"分享{r.get('shareCount', 0)}\n"
@@ -487,7 +550,7 @@ def _build_prompt(topic, refs, viral_analysis=None):
         if content:
             ref_text += f"正文节选: {content[:500]}\n"
 
-    # 插入爆款拆解结果
+    # ── 爆款拆解结果 ──
     analysis_text = ""
     if viral_analysis:
         analysis_text = "\n\n═══ 爆款拆解分析（必须严格遵循） ═══\n\n"
@@ -502,7 +565,6 @@ def _build_prompt(topic, refs, viral_analysis=None):
         ]:
             val = viral_analysis.get(key, "")
             if val:
-                # LLM 可能返回 list 或 str，统一处理
                 if isinstance(val, list):
                     val = "；".join(str(v) for v in val)
                 analysis_text += f"【{label}】{val}\n\n"
@@ -512,20 +574,104 @@ def _build_prompt(topic, refs, viral_analysis=None):
             for j, f in enumerate(formula, 1):
                 analysis_text += f"  {j}. {f}\n"
             analysis_text += "\n"
-        # 如果有原始分析（JSON 解析失败的情况）
         raw = viral_analysis.get("raw_analysis", "")
         if raw and not any(viral_analysis.get(k) for k in
                            ["emotional_hooks", "title_strategy", "opening_hook"]):
             analysis_text += f"\n【分析原文】\n{raw[:1500]}\n"
 
+    # ── SEO 关键词提示 ──
+    seo_text = ""
+    if seo_keywords:
+        seo_text = (
+            f"\n\n═══ SEO 关键词（必须布局到标题/摘要/正文中） ═══\n"
+            f"核心热词: {', '.join(seo_keywords[:8])}\n"
+            f"→ 标题必须包含其中 2-3 个\n"
+            f"→ 摘要前 15 字必须包含其中 1 个\n"
+            f"→ 正文前 100 字必须自然嵌入 2-3 个\n"
+            f"→ 正文中自然出现 5-8 次\n"
+        )
+
+    # ── 热点标题（确保关联性）──
+    topic_text = ""
+    if hot_titles:
+        topic_text = (
+            f"\n\n═══ 当前热点文章标题（你的文章必须与这些热点直接相关） ═══\n"
+        )
+        for t in hot_titles[:5]:
+            topic_text += f"  • {t}\n"
+        topic_text += (
+            f"→ 你的文章必须围绕上述热点展开，不能跑到其他话题！\n"
+        )
+
     return (
-        f"当前热点话题: {topic}\n\n"
-        f"以下是相关热门文章数据及爆款拆解分析，请严格运用爆款公式创作原创文章:\n"
+        f"当前热点话题: {topic}\n"
+        f"{topic_text}"
+        f"\n以下是相关热门文章数据及爆款拆解分析，请严格运用爆款公式创作原创文章:\n"
         f"{ref_text}"
         f"{analysis_text}"
-        f"\n⚠️ 重要：正文必须 2000-3000 字！至少包含 5-8 个段落，每段 200-400 字。"
-        f"要有深度分析、数据引用、案例对比，不要泛泛而谈。少于 1500 字不合格！\n"
+        f"{seo_text}"
+        f"\n⚠️ 最终检查清单（输出前逐条核对）：\n"
+        f"  □ 正文 2000-3000 字？\n"
+        f"  □ 有 5+ 处 <strong> 加粗？\n"
+        f"  □ 有 2+ 处 <blockquote> 引用块？\n"
+        f"  □ 有 3+ 个小标题？\n"
+        f"  □ 有 2+ 条 <hr/> 分隔线？\n"
+        f"  □ 标题含 2-3 个搜索热词？\n"
+        f"  □ 正文前 100 字含长尾搜索词？\n"
+        f"  □ 内容与热点标题直接相关？\n"
     )
+
+
+def _extract_seo_keywords(refs, top_n=10):
+    """
+    从参考文章标题中提取高频搜索关键词。
+    原理：这些标题已被验证是热门内容，其中的核心名词/动词就是有效搜索词。
+    """
+    # 停用词
+    stop_words = {
+        "的", "了", "是", "在", "和", "与", "也", "都", "就", "不",
+        "被", "让", "把", "给", "从", "到", "这", "那", "有", "为",
+        "什么", "怎么", "为什么", "一个", "我们", "他们", "自己",
+        "！", "？", "，", "。", "、", "…", "——", "·",
+    }
+    # 从标题中提取 2-6 字的词组
+    word_freq = {}
+    for r in refs:
+        title = r.get("title", "")
+        # 简单分词：按标点和空格切分，然后提取连续中文片段
+        segments = re.split(r'[，。！？、\s""''【】《》\(\)（）\[\]·…—]+', title)
+        for seg in segments:
+            seg = seg.strip()
+            if len(seg) >= 2 and seg not in stop_words:
+                word_freq[seg] = word_freq.get(seg, 0) + 1
+            # 也提取子串（2-4字的滑动窗口）
+            for size in range(2, min(len(seg), 5)):
+                for start in range(len(seg) - size + 1):
+                    sub = seg[start:start+size]
+                    if sub not in stop_words:
+                        word_freq[sub] = word_freq.get(sub, 0) + 0.5
+
+    # 按频率排序，取 top_n
+    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+    # 去重：如果一个词是另一个词的子串，保留更长的
+    result = []
+    seen = set()
+    for word, freq in sorted_words:
+        if word in seen:
+            continue
+        # 检查是否已被更长的词覆盖
+        is_sub = False
+        for existing in result:
+            if word in existing:
+                is_sub = True
+                break
+        if not is_sub:
+            result.append(word)
+            seen.add(word)
+        if len(result) >= top_n:
+            break
+
+    return result
 
 
 def generate_article(topic, refs, viral_analysis=None):
@@ -592,23 +738,41 @@ def generate_article(topic, refs, viral_analysis=None):
 
     print(f"  标题: {article['title']}", flush=True)
     print(f"  摘要: {article['digest']}", flush=True)
-    print(f"  正文: {len(article['content'])} 字符", flush=True)
+    content_html = article['content']
+    print(f"  正文: {len(content_html)} 字符", flush=True)
 
-    # 正文太短？重试（LLM 有时会偷懒）
-    MIN_CONTENT_LEN = 1200
-    max_retries = 2
-    for retry in range(1, max_retries + 1):
-        if len(article["content"]) >= MIN_CONTENT_LEN:
-            break
-        print(f"  ⚠️ 正文太短 ({len(article['content'])} 字 < {MIN_CONTENT_LEN})，"
-              f"第 {retry} 次重新生成...", flush=True)
-        # 追加长度投诉
-        extra = (
-            f"\n\n⚠️ 你上一次生成的正文只有 {len(article['content'])} 字，远远不够！"
-            f"必须写满 2000-3000 字！至少 8 个段落，每段 250-400 字。"
-            f"展开深度分析、加入更多案例和数据对比、增加读者互动环节。"
-            f"不要偷懒！"
-        )
+    # 质量检查：长度 + 排版
+    MIN_CONTENT_LEN = 1500
+    bold_count = len(re.findall(r'<strong', content_html))
+    quote_count = len(re.findall(r'<blockquote', content_html))
+    hr_count = len(re.findall(r'<hr', content_html))
+    issues = []
+    if len(content_html) < MIN_CONTENT_LEN:
+        issues.append(f"正文只有 {len(content_html)} 字（需 ≥{MIN_CONTENT_LEN}）")
+    if bold_count < 3:
+        issues.append(f"加粗只有 {bold_count} 处（需 ≥5）")
+    if quote_count < 1:
+        issues.append(f"引用块 {quote_count} 处（需 ≥2）")
+    if hr_count < 1:
+        issues.append(f"分隔线 {hr_count} 条（需 ≥2）")
+
+    if issues:
+        print(f"  ⚠️ 排版/长度不达标: {'; '.join(issues)}", flush=True)
+        max_retries = 2
+        for retry in range(1, max_retries + 1):
+            print(f"  第 {retry} 次重新生成...", flush=True)
+            extra = (
+                f"\n\n⚠️ 你上一次的输出有以下问题，必须全部修复：\n"
+                + "\n".join(f"  - {iss}" for iss in issues) +
+                f"\n\n必须做到：\n"
+                f"  1. 正文写满 2000-3000 字，至少 8 个段落\n"
+                f"  2. 至少 5 处 <strong> 加粗（数据+金句+结论）\n"
+                f"  3. 至少 2 处 <blockquote> 引用块\n"
+                f"  4. 至少 3 个小标题（加粗段落）\n"
+                f"  5. 至少 2 条 <hr/> 分隔线\n"
+                f"  6. 至少 2 处颜色强调（color:#c0392b 或 #2980b9）\n"
+                f"不要偷懒！排版不达标 = 不合格！\n"
+            )
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _build_prompt(topic, refs, viral_analysis) + extra},
@@ -644,25 +808,68 @@ def generate_article(topic, refs, viral_analysis=None):
                 print(f"  重试失败: {e}", flush=True)
                 break
 
+    # 最终排版质量报告
+    final_html = article['content']
+    final_bold = len(re.findall(r'<strong', final_html))
+    final_quote = len(re.findall(r'<blockquote', final_html))
+    final_hr = len(re.findall(r'<hr', final_html))
+    final_color = len(re.findall(r'color:', final_html))
+    print(f"  排版质量: 加粗{final_bold}处 引用{final_quote}处 "
+          f"分隔线{final_hr}条 颜色{final_color}处 "
+          f"正文{len(final_html)}字符", flush=True)
+
     return article
 
 
 def _parse_llm_json(text):
-    """从 LLM 响应中解析 JSON（兼容 markdown 代码块包裹）"""
+    """从 LLM 响应中解析 JSON（兼容 markdown 代码块包裹 + 常见格式问题）"""
     # 去掉可能的 ```json ... ``` 包裹
     text = text.strip()
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if m:
         text = m.group(1).strip()
-    try:
-        obj = json.loads(text)
-    except json.JSONDecodeError:
-        # 尝试提取第一个 { ... } 块
-        m2 = re.search(r"\{[\s\S]*\}", text)
-        if m2:
-            obj = json.loads(m2.group())
-        else:
-            raise
+
+    # 多策略尝试解析
+    for strategy in range(4):
+        candidate = text
+        if strategy == 0:
+            pass  # 直接解析
+        elif strategy == 1:
+            # 提取最大 { ... } 块
+            m2 = re.search(r"\{[\s\S]*\}", candidate)
+            if m2:
+                candidate = m2.group()
+        elif strategy == 2:
+            # 修复常见问题：尾部逗号、字符串内换行
+            m2 = re.search(r"\{[\s\S]*\}", candidate)
+            if m2:
+                candidate = m2.group()
+            candidate = re.sub(r",\s*([}\]])", r"\1", candidate)  # 尾部逗号
+            # 修复字符串内的裸换行（简单替换所有不在转义序列中的换行）
+            candidate = candidate.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+        elif strategy == 3:
+            # 最后手段：逐字段正则提取
+            obj = {}
+            for field in ("title", "digest"):
+                fm = re.search(rf'"{field}"\s*:\s*"([^"]*)"', text)
+                if fm:
+                    obj[field] = fm.group(1)
+            # content 可能很长且含引号，用贪婪匹配
+            cm = re.search(r'"content"\s*:\s*"([\s\S]*?)"\s*[,}]', text)
+            if cm:
+                obj["content"] = cm.group(1).replace("\\n", "\n").replace('\\"', '"')
+            if all(k in obj for k in ("title", "content", "digest")):
+                return obj
+            raise ValueError("无法从 LLM 输出中提取完整 JSON")
+
+        try:
+            obj = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            if strategy == 3:
+                raise
+            continue
+
     for key in ("title", "content", "digest"):
         if key not in obj:
             raise ValueError(f"LLM 返回缺少字段: {key}")
