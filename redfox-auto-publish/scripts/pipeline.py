@@ -516,11 +516,36 @@ SYSTEM_PROMPT = """\
 如果热点是关于某个具体事件/人物/政策，你的文章必须围绕这个事件展开，
 不能跑到其他话题上去。
 
+═══════════════════════════════════
+五、分享引导设计（10W+ 的核心引擎）
+═══════════════════════════════════
+
+10W+ 爆文的流量模型：粉丝阅读(5%) → 社交分享(30%) → 看一看推荐(40%) → 搜一搜(25%)
+分享是破圈的关键！必须在文章中嵌入以下「分享触发器」：
+
+【截图金句】正文中必须有 1-2 句「适合截图发朋友圈」的金句：
+  - 特征：短（15-30字）、有力、有画面感、有情绪张力
+  - 用 <strong> 加粗 + <blockquote> 包裹，让它视觉上就像一句格言
+  - 示例：「杠杆者把风险扛走，现金者把筹码收下」
+  - 示例：「等你想明白时，好筹码已被别人攥在手里收租」
+
+【社交货币句】结尾前必须有一句让分享者「显得有见识」的总结：
+  - 特征：高度概括、有洞察、有态度、不鸡汤
+  - 读者转发这句话 = 向朋友圈宣告「我是这样思考的人」
+  - 示例：「真正残酷的不是房价跌了，而是资产再分配时你不在场」
+
+【转发钩子】结尾互动区必须设计一个「转发理由」：
+  - 不要只说「觉得好看就转发」，要给一个具体的转发场景
+  - 示例：「如果你身边也有负债焦虑的朋友，转给他看看什么叫零负债生活」
+  - 示例：「转给你正在考虑买房的朋友，这篇文章能帮他省几十万」
+  - 格式：放在文章最后一句话，用 <em> 斜体强调
+
 输出严格 JSON（不要 markdown 代码块包裹）：
 {
   "title": "文章标题（≤14个汉字，含2-3个搜索热词）",
   "content": "<p>HTML正文</p>（2000-3000字，排版必须包含加粗/引用块/小标题/分隔线）",
-  "digest": "文章摘要（≤40个汉字，前15字含核心关键词）"
+  "digest": "文章摘要（≤40个汉字，前15字含核心关键词）",
+  "share_hook": "一句话转发引导语（20字内，给读者一个转发的具体理由）"
 }"""
 
 
@@ -1043,8 +1068,20 @@ def publish_to_draft(article):
     title  = _truncate_title(article["title"])
     digest = _truncate_digest(article.get("digest", ""))
 
+    # 追加分享钩子到正文末尾
+    content_html = article["content"]
+    share_hook = article.get("share_hook", "")
+    if share_hook:
+        content_html += (
+            f'<br/><br/>'
+            f'<p style="text-align:center;margin-top:20px;">'
+            f'<em style="color:#888;font-size:14px;">{share_hook}</em>'
+            f'</p>'
+        )
+        print(f"  分享钩子: {share_hook}", flush=True)
+
     # 包装正文样式
-    styled = _wrap_html(article["content"])
+    styled = _wrap_html(content_html)
 
     print(f"  标题: {title} ({_wechat_units(title)}单位)", flush=True)
     print(f"  摘要: {digest} ({len(digest.encode('utf-8'))}字节)", flush=True)
@@ -1056,7 +1093,7 @@ def publish_to_draft(article):
         "content":          styled,
         "content_source_url": "",
         "thumb_media_id":   thumb_id,
-        "need_open_comment": 0,
+        "need_open_comment": 1,
         "only_fans_can_comment": 0,
     }]
     draft_id = wechat_mp.create_draft(token, draft_articles)
@@ -1181,6 +1218,77 @@ def run_pipeline(keyword=None, dry_run=False, as_json=False):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  定时发布
+# ═══════════════════════════════════════════════════════════════════
+
+# 默认发布时间（北京时间 HH:MM）—— 用户活跃高峰前 30 分钟
+DEFAULT_SCHEDULE_TIMES = ["07:30", "12:30", "20:30"]
+
+
+def _next_slot(schedule_times, now=None):
+    """计算下一个发布时点，返回 datetime 或 None（今天已过）"""
+    from datetime import datetime, timedelta
+    if now is None:
+        now = datetime.now()
+    for t in sorted(schedule_times):
+        h, m = map(int, t.split(":"))
+        slot = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if slot > now:
+            return slot
+    # 今天全部过了 → 明天第一个
+    h, m = map(int, sorted(schedule_times)[0].split(":"))
+    tomorrow = now + timedelta(days=1)
+    return tomorrow.replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+def run_scheduled(schedule_times=None, dry_run=False):
+    """
+    定时循环执行 pipeline。每天在指定时间点自动运行。
+    适合作为后台守护进程运行：nohup python pipeline.py --schedule &
+    """
+    times = schedule_times or DEFAULT_SCHEDULE_TIMES
+    print(f"[定时模式] 发布时间: {', '.join(times)} (北京时间)", flush=True)
+    print(f"  dry_run={dry_run}", flush=True)
+
+    run_count = 0
+    while True:
+        from datetime import datetime
+        now = datetime.now()
+        next_time = _next_slot(times, now)
+        wait_secs = (next_time - now).total_seconds()
+
+        print(f"\n{'='*50}", flush=True)
+        print(f"  当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+        print(f"  下次执行: {next_time.strftime('%Y-%m-%d %H:%M:%S')}"
+              f" ({wait_secs/3600:.1f}小时后)", flush=True)
+        print(f"  已执行: {run_count} 次", flush=True)
+        print(f"{'='*50}\n", flush=True)
+
+        # 等待到下一个时点（每 60 秒检查一次，方便响应中断）
+        while True:
+            remaining = (next_time - datetime.now()).total_seconds()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, 60))
+
+        # 执行 pipeline
+        print(f"\n{'#'*50}", flush=True)
+        print(f"  定时执行 {datetime.now().strftime('%H:%M:%S')}", flush=True)
+        print(f"{'#'*50}", flush=True)
+
+        try:
+            result = run_pipeline(dry_run=dry_run)
+            run_count += 1
+            status = result.get("status", "unknown")
+            print(f"\n  [定时] 第 {run_count} 次执行完成, status={status}", flush=True)
+        except Exception as e:
+            print(f"\n  [定时] 执行异常: {e}", flush=True)
+
+        # 执行后等待 5 分钟，避免同一分钟重复触发
+        time.sleep(300)
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  CLI
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1194,6 +1302,8 @@ def main():
   python pipeline.py --dry-run        # 只生成不发布
   python pipeline.py "人工智能"       # 指定关键词
   python pipeline.py --json           # JSON 输出
+  python pipeline.py --schedule       # 定时模式（每天 7:30/12:30/20:30 自动执行）
+  python pipeline.py --schedule --schedule-times 08:00,18:00  # 自定义时间
 """)
     parser.add_argument(
         "keyword", nargs="?", default=None,
@@ -1207,8 +1317,23 @@ def main():
         "--json", dest="as_json", action="store_true",
         help="输出 JSON 格式结果",
     )
+    parser.add_argument(
+        "--schedule", dest="schedule", action="store_true",
+        help="定时模式：每天在流量高峰时段自动执行（后台守护进程）",
+    )
+    parser.add_argument(
+        "--schedule-times", dest="schedule_times", default=None,
+        help="自定义发布时间，逗号分隔（默认 07:30,12:30,20:30）",
+    )
     args = parser.parse_args()
-    run_pipeline(keyword=args.keyword, dry_run=args.dry_run, as_json=args.as_json)
+
+    if args.schedule:
+        times = None
+        if args.schedule_times:
+            times = [t.strip() for t in args.schedule_times.split(",")]
+        run_scheduled(schedule_times=times, dry_run=args.dry_run)
+    else:
+        run_pipeline(keyword=args.keyword, dry_run=args.dry_run, as_json=args.as_json)
 
 
 if __name__ == "__main__":
