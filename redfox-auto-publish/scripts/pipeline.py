@@ -34,6 +34,7 @@ import struct
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 
@@ -48,6 +49,43 @@ except ImportError:
 
 # ═══════════════════════════════════════════════════════════════════
 #  配  置
+# ═══════════════════════════════════════════════════════════════════
+
+# 微信公众号限制
+WX_TITLE_MAX_UNITS = 28     # 标题 ≤ 28 微信单位（ASCII=1, 中文=2）
+WX_DIGEST_MAX_BYTES = 120   # 摘要 ≤ 120 字节（留余量，官方 40 汉字）
+
+# Pollinations.ai 免费文生图（无需 API Key）
+POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
+
+# 主题→视觉描述映射（用于生成贴合文意的封面）
+_THEME_VISUAL_MAP = {
+    "人工智能": "artificial intelligence, neural network, digital brain, glowing circuits",
+    "AI": "AI technology, robot, machine learning visualization",
+    "芯片": "semiconductor chip, microprocessor, silicon wafer, tech lab",
+    "新能源": "solar panels, wind turbines, green energy, clean power",
+    "股市": "stock market chart, trading floor, financial data, bull bear",
+    "经济": "economy, global trade, financial growth, currency symbols",
+    "教育": "education, students, books, university campus, learning",
+    "医疗": "healthcare, medical technology, hospital, doctors",
+    "就业": "employment, job market, career, professional workplace",
+    "全球": "globe, world map, international relations, diplomacy",
+    "中美": "China US relations, two flags, diplomatic handshake",
+    "热点": "trending news, breaking story, media spotlight, hot topic",
+    "最新": "latest news, fresh update, modern media, information flow",
+    "重磅": "major announcement, impactful event, dramatic moment",
+    "关注": "public attention, spotlight, social focus, community",
+    "突破": "breakthrough, innovation, technology advance, discovery",
+    "5G": "5G network, telecommunications tower, high speed data, connectivity",
+    "房价": "real estate, housing market, buildings, property",
+}
+
+_STYLE_SUFFIX = (
+    ". Professional editorial illustration, dramatic lighting, "
+    "rich colors, cinematic composition, high detail, 4K quality. "
+    "No text, no words, no watermark, no logo, no letters. "
+    "Suitable as WeChat article cover thumbnail."
+)
 # ═══════════════════════════════════════════════════════════════════
 
 API = {
@@ -160,18 +198,25 @@ SYSTEM_PROMPT = """\
 你的任务：基于提供的热点话题和参考数据，创作一篇高质量的原创公众号文章。
 
 要求：
-1. 标题抓眼球但不标题党，让人有点击欲望
+1. 标题抓眼球但不标题党，让人有点击欲望。标题不超过 14 个汉字！
 2. 开头 3 句话内必须勾住读者，制造悬念或共鸣
 3. 内容要有独特视角和深度分析，不是简单复述新闻
 4. 段落短小（2-4 句），适合手机阅读
 5. 适当用数据、案例、对比增强说服力
 6. 结尾引导读者思考和互动
+7. 摘要不超过 40 个汉字，要有悬念感
+
+⚠️ HTML 格式要求（微信公众号渲染限制）：
+  - 禁止使用 <ul>、<ol>、<li> 标签（微信不支持，会渲染为空白）
+  - 只用 <p>、<strong>、<em>、<blockquote>、<section>、<br/>
+  - 段落用 <p> 包裹，段间留空行
+  - 如需列举，用 <p>➤ 要点内容</p> 或 <p>① 要点内容</p> 格式
 
 输出严格 JSON（不要 markdown 代码块包裹）：
 {
-  "title": "文章标题（20字以内）",
-  "content": "<p>HTML正文</p>（1500-2500字，段落用<p>包裹，可加<strong>强调</strong>）",
-  "digest": "文章摘要（60字以内，显示在推送消息中）"
+  "title": "文章标题（≤14个汉字）",
+  "content": "<p>HTML正文</p>（1500-2500字）",
+  "digest": "文章摘要（≤40个汉字）"
 }"""
 
 
@@ -269,26 +314,95 @@ def _parse_llm_json(text):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  缩略图生成（纯标准库，无需 Pillow）
+#  微信辅助 + 封面生成
 # ═══════════════════════════════════════════════════════════════════
 
-def _make_png_chunk(chunk_type, data):
-    chunk = chunk_type + data
-    return (
-        struct.pack(">I", len(data))
-        + chunk
-        + struct.pack(">I", zlib.crc32(chunk) & 0xFFFFFFFF)
+def _wechat_units(text):
+    """微信长度单位：ASCII=1, 中文/全角=2"""
+    return sum(1 if ord(c) < 128 else 2 for c in text)
+
+
+def _truncate_title(title, max_units=WX_TITLE_MAX_UNITS):
+    """截断标题以适应微信限制"""
+    if _wechat_units(title) <= max_units:
+        return title
+    while len(title) > 3 and _wechat_units(title) > max_units:
+        title = title[:-1]
+    return title
+
+
+def _truncate_digest(digest, max_bytes=WX_DIGEST_MAX_BYTES):
+    """截断摘要以适应微信限制"""
+    encoded = digest.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return digest
+    while len(digest) > 5 and len(digest.encode("utf-8")) > max_bytes:
+        digest = digest[:-1]
+    return digest
+
+
+def _extract_themes(title, content=""):
+    """从标题和内容提取主题关键词"""
+    combined = (title + " " + content).lower()
+    matched = []
+    for kw in sorted(_THEME_VISUAL_MAP.keys(), key=len, reverse=True):
+        if kw in combined and kw not in matched:
+            matched.append(kw)
+    return matched
+
+
+def generate_cover_image(title, content=""):
+    """
+    使用 Pollinations.ai 免费生成封面图（无需 API Key）。
+    返回 JPEG 字节。
+    """
+    print("  生成 AI 封面图...", flush=True)
+    themes = _extract_themes(title, content)
+
+    if themes:
+        visual = "; ".join(_THEME_VISUAL_MAP[k] for k in themes[:5])
+        prompt = (
+            f"A powerful cover image representing: {visual}. "
+            f"Article theme: {title}. "
+            f"Mood: dramatic and thought-provoking"
+            + _STYLE_SUFFIX
+        )
+    else:
+        clean = re.sub(r"<[^>]+>", "", content)
+        clean = re.sub(r"[#*`\[\]()>_~\-]", "", clean)
+        clean = re.sub(r"\s+", " ", clean).strip()[:120]
+        prompt = (
+            f"Professional WeChat article cover for: {title}. "
+            f"Content: {clean}. "
+            f"Visually striking, professional composition, vibrant colors"
+            + _STYLE_SUFFIX
+        )
+
+    encoded = urllib.parse.quote(prompt, safe="")
+    seed = hash(title) % 999999
+    url = (
+        f"{POLLINATIONS_URL.format(prompt=encoded)}"
+        f"?width=1024&height=576&model=flux&nologo=true&seed={seed}"
     )
 
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            img_data = resp.read()
+        if len(img_data) < 1000:
+            raise ValueError(f"封面图太小 ({len(img_data)} bytes)，可能生成失败")
+        print(f"  封面图已生成 ({len(img_data)//1024}KB)", flush=True)
+        return img_data
+    except Exception as e:
+        print(f"  Pollinations.ai 失败: {e}，使用备用渐变图", flush=True)
+        return _generate_fallback_png()
 
-def generate_thumbnail(width=900, height=383):
-    """
-    生成蓝色渐变 PNG 缩略图（纯标准库实现）。
-    返回 PNG 字节。
-    """
+
+def _generate_fallback_png(width=900, height=383):
+    """备用：纯标准库生成蓝色渐变 PNG"""
     raw_rows = []
     for y in range(height):
-        row = b"\x00"           # filter=None
+        row = b"\x00"
         for x in range(width):
             r = int(25 + 50 * y / height)
             g = int(80 + 100 * y / height)
@@ -305,11 +419,20 @@ def generate_thumbnail(width=900, height=383):
     return sig + ihdr + idat + iend
 
 
+def _make_png_chunk(chunk_type, data):
+    chunk = chunk_type + data
+    return (
+        struct.pack(">I", len(data))
+        + chunk
+        + struct.pack(">I", zlib.crc32(chunk) & 0xFFFFFFFF)
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  Phase 3 — 发布到公众号草稿
 # ═══════════════════════════════════════════════════════════════════
 
-def publish_to_draft(article, thumb_png):
+def publish_to_draft(article):
     """上传封面 + 创建草稿，返回 draft_media_id"""
     print(f"\n[Phase 3] 发布到公众号草稿", flush=True)
 
@@ -323,19 +446,26 @@ def publish_to_draft(article, thumb_png):
 
     token = wechat_mp.get_access_token(appid, secret)
 
-    # 封面图：优先使用预置 media_id
+    # 封面图：优先使用预置 media_id，否则 AI 生成
     thumb_id = os.environ.get("WECHAT_THUMB_ID", "")
     if not thumb_id:
-        print("  生成封面图...", flush=True)
-        thumb_id = wechat_mp.upload_image(token, thumb_png, "cover.png")
+        cover_data = generate_cover_image(article["title"], article.get("content", ""))
+        thumb_id = wechat_mp.upload_image(token, cover_data, "cover.jpg")
+
+    # 截断标题和摘要以适应微信限制
+    title  = _truncate_title(article["title"])
+    digest = _truncate_digest(article.get("digest", ""))
 
     # 包装正文样式
     styled = _wrap_html(article["content"])
 
+    print(f"  标题: {title} ({_wechat_units(title)}单位)", flush=True)
+    print(f"  摘要: {digest} ({len(digest.encode('utf-8'))}字节)", flush=True)
+
     draft_articles = [{
-        "title":            article["title"],
+        "title":            title,
         "author":           "",
-        "digest":           article["digest"],
+        "digest":           digest,
         "content":          styled,
         "content_source_url": "",
         "thumb_media_id":   thumb_id,
@@ -431,8 +561,7 @@ def run_pipeline(keyword=None, dry_run=False, as_json=False):
         print(f"  正文长度: {len(article['content'])} 字符", flush=True)
     else:
         try:
-            thumb_png = generate_thumbnail()
-            draft_id = publish_to_draft(article, thumb_png)
+            draft_id = publish_to_draft(article)
             result["draft_media_id"] = draft_id
             print(f"\n  草稿 ID: {draft_id}", flush=True)
         except Exception as e:

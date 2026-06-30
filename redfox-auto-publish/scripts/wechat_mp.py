@@ -37,7 +37,7 @@ def get_access_token(appid, secret, force_refresh=False):
             pass
 
     url = (
-        f"{BASE}/token?grant_type=clientcred"
+        f"{BASE}/token?grant_type=client_credential"
         f"&appid={appid}&secret={secret}"
     )
     try:
